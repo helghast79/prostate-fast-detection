@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prostate series review</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <h1>Prostate series review</h1>
+        <p id="status">Loading manifest…</p>
+      </div>
+      <div class="controls">
+        <label class="field">
+          <span>Filter</span>
+          <input id="filter" type="search" placeholder="PatientID / description / UID" />
+        </label>
+        <label class="check">
+          <input id="with-seg-only" type="checkbox" checked />
+          Patients with SEG
+        </label>
+        <label class="check">
+          <input id="untagged-only" type="checkbox" />
+          Untagged only
+        </label>
+        <label class="field">
+          <span>Page size</span>
+          <select id="page-size">
+            <option value="20">20</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <div class="pager">
+          <button id="prev" type="button" class="ghost">Prev</button>
+          <span id="page-label">1 / 1</span>
+          <button id="next" type="button" class="ghost">Next</button>
+        </div>
+        <button id="save" type="button">Save tags</button>
+      </div>
+    </header>
+    <main id="patients" class="patients"></main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
