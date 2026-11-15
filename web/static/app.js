@@ -12,6 +12,7 @@
     filter: document.getElementById("filter"),
     withSegOnly: document.getElementById("with-seg-only"),
     untaggedOnly: document.getElementById("untagged-only"),
+    showDiscarded: document.getElementById("show-discarded"),
     pageSize: document.getElementById("page-size"),
     pageLabel: document.getElementById("page-label"),
     prev: document.getElementById("prev"),
@@ -26,19 +27,29 @@
   function thumbUrl(series) {
     if (!series.orthanc_series_id) return null;
     const params = new URLSearchParams({ size: "144" });
-    if (series.preview_instance_id) {
+    if (series.modality === "SEG") {
+      params.set("modality", "SEG");
+    } else if (series.preview_instance_id) {
       params.set("instance_id", series.preview_instance_id);
     }
     return `/api/thumbnail/${encodeURIComponent(series.orthanc_series_id)}?${params}`;
   }
 
   function isTagged(series) {
+    if (series.discarded) return true;
     if (series.modality === "MR") return Boolean(series.mr_tag);
     return series.is_prostate_regions === true || series.is_prostate_regions === false;
   }
 
-  function patientMatches(patient, query, withSegOnly, untaggedOnly) {
+  function visibleSeries(patient) {
     const series = patient.series || [];
+    if (el.showDiscarded.checked) return series;
+    return series.filter((s) => !s.discarded);
+  }
+
+  function patientMatches(patient, query, withSegOnly, untaggedOnly) {
+    const series = visibleSeries(patient);
+    if (!series.length) return false;
     if (withSegOnly && !series.some((s) => s.modality === "SEG")) return false;
     if (untaggedOnly && series.every(isTagged)) return false;
     if (!query) return true;
@@ -73,7 +84,6 @@
 
     for (const seg of segs) {
       if (usedSeg.has(seg.series_instance_uid)) continue;
-      // SEG references a series not present in this patient catalog.
       const missingRefs = (seg.referenced_series_uids || []).filter((uid) => !byUid.has(uid));
       rows.push({
         kind: missingRefs.length ? "orphan-seg" : "single",
@@ -98,6 +108,7 @@
   function onMrTagChange(uid, value) {
     const ann = ensureAnnotation(uid);
     ann.mr_tag = value || null;
+    ann.discarded = false;
     delete ann.is_prostate_regions;
     markDirty();
   }
@@ -107,13 +118,31 @@
     if (value === "true") ann.is_prostate_regions = true;
     else if (value === "false") ann.is_prostate_regions = false;
     else ann.is_prostate_regions = null;
+    ann.discarded = false;
     delete ann.mr_tag;
     markDirty();
   }
 
+  function setDiscarded(series, discarded) {
+    series.discarded = discarded;
+    const ann = ensureAnnotation(series.series_instance_uid);
+    ann.discarded = discarded;
+    if (discarded) {
+      // Keep prior tags in annotations only if already saved; clear active pick.
+      series.mr_tag = null;
+      if (series.modality === "MR") {
+        ann.mr_tag = null;
+      }
+    }
+    markDirty();
+    render();
+  }
+
   function renderCard(series) {
     const card = document.createElement("article");
-    card.className = `card ${series.modality === "SEG" ? "seg" : "mr"}`;
+    card.className = `card ${series.modality === "SEG" ? "seg" : "mr"}${
+      series.discarded ? " discarded" : ""
+    }`;
 
     const thumb = document.createElement("div");
     thumb.className = "thumb-wrap";
@@ -143,8 +172,12 @@
       )}</div>
     `;
 
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+
     if (series.modality === "MR") {
       const select = document.createElement("select");
+      select.disabled = Boolean(series.discarded);
       select.innerHTML = `
         <option value="">tag…</option>
         <option value="t2">t2</option>
@@ -154,11 +187,14 @@
       select.value = series.mr_tag || "";
       select.addEventListener("change", () => {
         series.mr_tag = select.value || null;
+        series.discarded = false;
         onMrTagChange(series.series_instance_uid, select.value);
+        render();
       });
-      body.appendChild(select);
+      actions.appendChild(select);
     } else {
       const select = document.createElement("select");
+      select.disabled = Boolean(series.discarded);
       select.title = "Is prostate regions SEG?";
       select.innerHTML = `
         <option value="">prostate regions…</option>
@@ -172,15 +208,33 @@
         if (select.value === "true") series.is_prostate_regions = true;
         else if (select.value === "false") series.is_prostate_regions = false;
         else series.is_prostate_regions = null;
+        series.discarded = false;
         onProstateFlagChange(series.series_instance_uid, select.value);
+        render();
       });
-      body.appendChild(select);
-      if (series.segment_labels && series.segment_labels.length) {
-        const labs = document.createElement("div");
-        labs.className = "uid";
-        labs.textContent = series.segment_labels.slice(0, 4).join(" · ");
-        body.appendChild(labs);
-      }
+      actions.appendChild(select);
+    }
+
+    const discardBtn = document.createElement("button");
+    discardBtn.type = "button";
+    if (series.discarded) {
+      discardBtn.className = "restore";
+      discardBtn.textContent = "Restore";
+      discardBtn.addEventListener("click", () => setDiscarded(series, false));
+    } else {
+      discardBtn.className = "discard";
+      discardBtn.textContent = "Discard";
+      discardBtn.title = "Remove from series of interest";
+      discardBtn.addEventListener("click", () => setDiscarded(series, true));
+    }
+    actions.appendChild(discardBtn);
+    body.appendChild(actions);
+
+    if (series.modality === "SEG" && series.segment_labels && series.segment_labels.length) {
+      const labs = document.createElement("div");
+      labs.className = "uid";
+      labs.textContent = series.segment_labels.slice(0, 4).join(" · ");
+      body.appendChild(labs);
     }
 
     card.appendChild(thumb);
@@ -223,19 +277,22 @@
     for (const patient of pageItems) {
       const section = document.createElement("section");
       section.className = "patient";
-
-      const nMr = patient.series.filter((s) => s.modality === "MR").length;
-      const nSeg = patient.series.filter((s) => s.modality === "SEG").length;
+      const shown = visibleSeries(patient);
+      const nMr = shown.filter((s) => s.modality === "MR").length;
+      const nSeg = shown.filter((s) => s.modality === "SEG").length;
+      const nDiscarded = (patient.series || []).filter((s) => s.discarded).length;
       section.innerHTML = `
         <div class="patient-head">
           <div class="patient-id">${escapeHtml(patient.patient_id)}</div>
-          <div class="patient-meta">${nMr} MR · ${nSeg} SEG</div>
+          <div class="patient-meta">${nMr} MR · ${nSeg} SEG${
+            nDiscarded ? ` · ${nDiscarded} discarded` : ""
+          }</div>
         </div>
       `;
 
       const rowsWrap = document.createElement("div");
       rowsWrap.className = "rows";
-      for (const row of groupSeries(patient.series)) {
+      for (const row of groupSeries(shown)) {
         const rowEl = document.createElement("div");
         rowEl.className = "row";
         for (const series of row.items) {
@@ -253,22 +310,41 @@
     );
   }
 
+  function collectAnnotations() {
+    const series = {};
+    for (const patient of state.patients) {
+      for (const s of patient.series) {
+        const uid = s.series_instance_uid;
+        const fromState = state.annotations[uid] || {};
+        const item = {};
+        if (s.discarded || fromState.discarded) item.discarded = true;
+        if (s.modality === "MR") {
+          const tag = s.discarded ? fromState.mr_tag : s.mr_tag;
+          if (tag) item.mr_tag = tag;
+          else item.mr_tag = null;
+        } else if (
+          s.is_prostate_regions === true ||
+          s.is_prostate_regions === false ||
+          fromState.is_prostate_regions === true ||
+          fromState.is_prostate_regions === false
+        ) {
+          item.is_prostate_regions =
+            s.is_prostate_regions === true || s.is_prostate_regions === false
+              ? s.is_prostate_regions
+              : fromState.is_prostate_regions;
+        }
+        if (item.discarded || item.mr_tag || item.is_prostate_regions === true || item.is_prostate_regions === false) {
+          series[uid] = item;
+        }
+      }
+    }
+    return series;
+  }
+
   async function save() {
     el.save.disabled = true;
     try {
-      // Persist current in-memory values for all series that have a decision.
-      const series = { ...state.annotations };
-      for (const patient of state.patients) {
-        for (const s of patient.series) {
-          if (s.modality === "MR" && s.mr_tag) {
-            series[s.series_instance_uid] = { mr_tag: s.mr_tag };
-          } else if (s.modality === "SEG" && (s.is_prostate_regions === true || s.is_prostate_regions === false)) {
-            series[s.series_instance_uid] = {
-              is_prostate_regions: s.is_prostate_regions,
-            };
-          }
-        }
-      }
+      const series = collectAnnotations();
       const res = await fetch("/api/annotations", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -312,6 +388,7 @@
     el.filter.addEventListener("input", resetPageAndRender);
     el.withSegOnly.addEventListener("change", resetPageAndRender);
     el.untaggedOnly.addEventListener("change", resetPageAndRender);
+    el.showDiscarded.addEventListener("change", resetPageAndRender);
     el.pageSize.addEventListener("change", resetPageAndRender);
     el.prev.addEventListener("click", () => {
       state.page -= 1;
@@ -339,6 +416,13 @@
       const annRes = await fetch("/api/annotations");
       const ann = annRes.ok ? await annRes.json() : { series: {} };
       state.annotations = ann.series || {};
+      // Apply discarded flags from saved annotations onto in-memory series.
+      for (const patient of state.patients) {
+        for (const s of patient.series) {
+          const saved = state.annotations[s.series_instance_uid];
+          if (saved && saved.discarded) s.discarded = true;
+        }
+      }
       setStatus(
         `${data.patient_count} patients · ${data.series_count} series · generated ${data.generated_at || "?"}`
       );

@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 from src.orthanc_client import OrthancClient
+from src.seg_preview import resolve_seg_thumbnail_target
 from src.series_manifest import (
     MR_TAGS,
     read_json_manifest,
@@ -76,15 +77,21 @@ def enrich_patients(patients_raw: list[dict[str, Any]], annotations: dict[str, A
             ann = ann_series.get(uid) or {}
             modality = str(series.get("modality", "")).upper()
             item = dict(series)
+            discarded = bool(ann.get("discarded"))
+            item["discarded"] = discarded
             if modality == "MR":
                 tag = ann.get("mr_tag")
                 if tag not in MR_TAGS:
-                    tag = suggest_mr_tag(str(series.get("series_description", "")))
-                item["mr_tag"] = tag
+                    tag = (
+                        None
+                        if discarded
+                        else suggest_mr_tag(str(series.get("series_description", "")))
+                    )
+                item["mr_tag"] = tag if tag in MR_TAGS else None
                 item["is_prostate_regions"] = None
             else:
                 flag = ann.get("is_prostate_regions")
-                if flag is None:
+                if flag is None and not discarded:
                     flag = suggest_prostate_regions(
                         str(series.get("series_description", "")),
                         list(series.get("segment_labels") or []),
@@ -159,6 +166,9 @@ def create_app(manifest_path: Path, annotations_path: Path) -> Flask:
             if not isinstance(value, dict):
                 continue
             item: dict[str, Any] = {}
+            discarded = bool(value.get("discarded"))
+            if discarded:
+                item["discarded"] = True
             mr_tag = value.get("mr_tag")
             if mr_tag in MR_TAGS:
                 item["mr_tag"] = mr_tag
@@ -172,7 +182,9 @@ def create_app(manifest_path: Path, annotations_path: Path) -> Flask:
                     item["is_prostate_regions"] = False
                 else:
                     item["is_prostate_regions"] = None
-            cleaned["series"][str(uid)] = item
+            # Keep entries that are discarded and/or tagged.
+            if item:
+                cleaned["series"][str(uid)] = item
         save_annotations(annotations_path, cleaned)
         return jsonify({"ok": True, "count": len(cleaned["series"])})
 
@@ -181,14 +193,33 @@ def create_app(manifest_path: Path, annotations_path: Path) -> Flask:
         size = request.args.get("size", default=128, type=int) or 128
         size = max(32, min(size, 512))
         instance_id = request.args.get("instance_id") or ""
+        frame = request.args.get("frame", default=None, type=int)
+        modality = (request.args.get("modality") or "").upper()
         try:
-            if not instance_id:
+            if modality == "SEG" and not instance_id:
+                target = resolve_seg_thumbnail_target(client.base_url, series_id)
+                instance_id = str(target["instance_id"])
+                frame = target.get("frame_index")
+            elif not instance_id:
                 series = client.get_series(series_id)
                 instances = series.get("Instances") or []
                 if not instances:
                     return Response(status=404)
-                instance_id = instances[len(instances) // 2]
-            png = client.download_rendered(instance_id, width=size, height=size)
+                modality_tags = (series.get("MainDicomTags") or {}).get("Modality", "")
+                if str(modality_tags).upper() == "SEG":
+                    target = resolve_seg_thumbnail_target(client.base_url, series_id)
+                    instance_id = str(target["instance_id"])
+                    frame = target.get("frame_index")
+                else:
+                    instance_id = instances[len(instances) // 2]
+
+            if frame is not None:
+                png = client.get_bytes(
+                    f"/instances/{instance_id}/frames/{int(frame)}/rendered",
+                    {"width": size, "height": size},
+                )
+            else:
+                png = client.download_rendered(instance_id, width=size, height=size)
         except Exception as exc:  # noqa: BLE001
             return jsonify({"error": str(exc)}), 502
         return Response(png, mimetype="image/png")
@@ -199,7 +230,7 @@ def create_app(manifest_path: Path, annotations_path: Path) -> Flask:
 def main() -> int:
     load_dotenv(ROOT / ".env")
     args = parse_args()
-    host = args.host or os.getenv("MANIFEST_REVIEW_HOST", "127.0.0.1")
+    host = args.host or os.getenv("MANIFEST_REVIEW_HOST", "0.0.0.0")
     port = args.port or int(os.getenv("MANIFEST_REVIEW_PORT", "8765"))
     app = create_app(args.manifest, args.annotations)
     print(f"Manifest: {args.manifest}")

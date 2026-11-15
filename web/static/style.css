@@ -187,6 +187,43 @@ button.saved {
   border-color: color-mix(in srgb, var(--seg) 55%, var(--line));
 }
 
+.card.discarded {
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+.card-actions {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.card-actions select {
+  flex: 1;
+  min-width: 0;
+}
+
+button.discard,
+button.restore {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.25rem 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.discard {
+  background: color-mix(in srgb, var(--danger) 18%, var(--panel-2));
+  color: #ffc9c9;
+}
+
+button.restore {
+  background: color-mix(in srgb, var(--ok) 18%, var(--panel-2));
+  color: #b9f5d4;
+}
+
 .thumb-wrap {
   aspect-ratio: 1;
   background: #000;
