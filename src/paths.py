@@ -7,6 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 TASK_PROSTATE_DETECT = "prostate_detect"
+TASK_CASCADE = "prostate_detect"  # cascade runs live under outputs/prostate_detect/cascade/
 KNOWN_TASKS = (TASK_PROSTATE_DETECT,)
 
 
