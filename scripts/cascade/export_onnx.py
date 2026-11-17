@@ -63,7 +63,26 @@ def main() -> int:
             dynamic_axes={"input": {0: "batch"}, "presence_logit": {0: "batch"}, "center_yx": {0: "batch"}},
             opset_version=args.opset,
         )
-        meta = {"stage": "localizer", "image_size": size, "onnx": str(out)}
+        meta = {
+            "stage": "localizer",
+            "arch": "shallow_cnn",
+            "checkpoint": str(args.checkpoint),
+            "float_onnx": str(out),
+            "input_name": "input",
+            "output_names": ["presence_logit", "center_yx"],
+            "input_layout": "NCHW",
+            "in_channels": 1,
+            "image_size": size,
+            "preprocess": (
+                "full-slice grayscale; percentile 1-99 stretch to [0,1] float32; "
+                f"resize {size}x{size} bilinear"
+            ),
+            "postprocess": (
+                "presence = sigmoid(presence_logit); "
+                "center_yx already in [0,1] as (row, col) relative to full native slice; "
+                "pixel_row = cy * (rows-1), pixel_col = cx * (cols-1)"
+            ),
+        }
     else:
         arch = ckpt.get("arch", "enet")
         size = int(ckpt.get("crop_size", CASCADE_DECISIONS.roi_crop_size))
