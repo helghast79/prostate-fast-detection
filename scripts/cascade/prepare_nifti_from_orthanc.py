@@ -48,6 +48,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--limit-patients", type=int, default=None)
     p.add_argument("--patient-id", type=str, default=None)
     p.add_argument("--force", action="store_true")
+    p.add_argument(
+        "--raw-intensity",
+        action="store_true",
+        help="Store rescaled DICOM values instead of volume-percentile [0,1]",
+    )
+    p.add_argument(
+        "--exclude-seminal-vesicles",
+        action="store_true",
+        help="Drop SV segments so masks contain prostate only",
+    )
     return p.parse_args()
 
 
@@ -131,7 +141,10 @@ def main() -> int:
             for instance_id in seg_series.get("Instances") or []:
                 try:
                     seg_bytes = client.download_instance_file(instance_id)
-                    frames, seg_ds = extract_prostate_frames(seg_bytes)
+                    frames, seg_ds = extract_prostate_frames(
+                        seg_bytes,
+                        exclude_seminal_vesicles=args.exclude_seminal_vesicles,
+                    )
                     if frames:
                         used_segments = frames[0].segment_numbers
                     for frame in frames:
@@ -195,7 +208,11 @@ def main() -> int:
                 errors.append(f"{pair.patient_id}: no masks aligned to T2")
                 continue
 
-            vol_n, norm_meta = percentile_normalize(vol)
+            if args.raw_intensity:
+                vol_n = vol.astype(np.float32)
+                norm_meta = {"method": "raw_rescaled"}
+            else:
+                vol_n, norm_meta = percentile_normalize(vol)
             save_nifti(paths["image"], vol_n, affine, dtype=np.float32)
             save_nifti(paths["mask"], mask_vol, affine, dtype=np.uint8)
 

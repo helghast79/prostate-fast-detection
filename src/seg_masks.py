@@ -97,14 +97,30 @@ def all_segment_numbers(seg_ds: Dataset) -> list[int]:
     return [n for n in nums if n > 0] or [1]
 
 
-def extract_prostate_frames(seg_bytes: bytes) -> tuple[list[FrameMask], Dataset]:
+def _is_seminal_vesicle(label: str) -> bool:
+    text = " ".join(str(label or "").strip().lower().split())
+    return "seminal" in text or text in {"sv", "s.v.", "s.v"}
+
+
+def extract_prostate_frames(
+    seg_bytes: bytes, *, exclude_seminal_vesicles: bool = False
+) -> tuple[list[FrameMask], Dataset]:
     """
     Extract per-plane prostate masks, OR-merging **all** segments.
 
     Two-segment zone labels (e.g. TZ+CZ / PZ) are joined into one whole-gland mask.
+    Seminal-vesicle segments are not prostate; drop them with
+    ``exclude_seminal_vesicles=True``.
     """
     seg_ds = pydicom.dcmread(io.BytesIO(seg_bytes))
     segment_numbers = all_segment_numbers(seg_ds)
+    if exclude_seminal_vesicles:
+        sv_numbers = {
+            int(getattr(s, "SegmentNumber", 0))
+            for s in getattr(seg_ds, "SegmentSequence", []) or []
+            if _is_seminal_vesicle(getattr(s, "SegmentLabel", ""))
+        }
+        segment_numbers = [n for n in segment_numbers if n not in sv_numbers] or segment_numbers
     series_uid = _series_uid_from_shared(seg_ds)
     pixels = _pixel_array_frames(seg_ds)
     per_frame = list(getattr(seg_ds, "PerFrameFunctionalGroupsSequence", []) or [])
