@@ -88,12 +88,30 @@ function fmt(x, d=4) {
   return Number(x).toFixed(d);
 }
 
+// Accept nested {train:{loss}, val:{loss,dice,iou}} or flat train_loss/val_loss/val_dice.
+function normRow(r) {
+  if (!r) return {epoch: null, train: {loss: null}, val: {loss: null, dice: null, iou: null}};
+  if (r.train && r.val) {
+    return {
+      epoch: r.epoch,
+      train: {loss: r.train.loss},
+      val: {loss: r.val.loss, dice: r.val.dice, iou: r.val.iou},
+    };
+  }
+  return {
+    epoch: r.epoch,
+    train: {loss: r.train_loss},
+    val: {loss: r.val_loss, dice: r.val_dice, iou: r.val_iou},
+  };
+}
+
 function drawChart(history) {
   const canvas = document.getElementById('chart');
   const ctx = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
-  if (!history.length) {
+  const rows = (history || []).map(normRow);
+  if (!rows.length) {
     ctx.fillStyle = '#8b9bb0';
     ctx.fillText('Waiting for first epoch…', 24, h/2);
     return;
@@ -101,13 +119,13 @@ function drawChart(history) {
   const pad = {l: 48, r: 16, t: 16, b: 28};
   const plotW = w - pad.l - pad.r;
   const plotH = h - pad.t - pad.b;
-  const losses = history.flatMap(r => [r.train.loss, r.val.loss]).filter(x => Number.isFinite(x));
-  const dices = history.map(r => r.val.dice).filter(x => Number.isFinite(x));
+  const losses = rows.flatMap(r => [r.train.loss, r.val.loss]).filter(x => Number.isFinite(x));
+  const dices = rows.map(r => r.val.dice).filter(x => Number.isFinite(x));
   const minL = Math.min(...losses);
   const maxL = Math.max(...losses);
   const minD = Math.min(0, ...dices);
   const maxD = Math.max(1, ...dices);
-  const n = history.length;
+  const n = rows.length;
   const xAt = i => pad.l + (n === 1 ? plotW/2 : (i / (n-1)) * plotW);
   const yL = v => pad.t + (1 - ((v - minL) / (maxL - minL || 1))) * plotH;
   const yD = v => pad.t + (1 - ((v - minD) / (maxD - minD || 1))) * plotH;
@@ -123,7 +141,7 @@ function drawChart(history) {
     ctx.beginPath();
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
-    history.forEach((r, i) => {
+    rows.forEach((r, i) => {
       const v = key === 'dice' ? r.val.dice : (key === 'train' ? r.train.loss : r.val.loss);
       const x = xAt(i), y = yFn(v);
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
@@ -154,7 +172,9 @@ function drawChart(history) {
 
 function render(data) {
   const status = data.status || 'idle';
-  const statusClass = status === 'running' ? 'status-run' : (status === 'finished' ? 'status-done' : 'status-ok');
+  const statusClass = status === 'running' ? 'status-run' : (status === 'finished' || status === 'done' ? 'status-done' : 'status-ok');
+  const latest = normRow(data.latest);
+  const bestDice = data.best_dice ?? data.best_val_dice;
   document.getElementById('subtitle').innerHTML =
     `<span class="${statusClass}">${status}</span>` +
     ` · ${data.run_name || ''}` +
@@ -164,12 +184,12 @@ function render(data) {
 
   const cards = [
     ['Epoch', `${data.epoch || 0} / ${data.max_epochs || '?'}`],
-    ['Train loss', fmt(data.latest?.train?.loss)],
-    ['Val loss', fmt(data.latest?.val?.loss)],
-    ['Val Dice', fmt(data.latest?.val?.dice)],
-    ['Val IoU', fmt(data.latest?.val?.iou)],
-    ['Best Dice', fmt(data.best_dice)],
-    ['No improve', `${data.epochs_without_improve || 0} / ${data.patience || '?'}`],
+    ['Train loss', fmt(latest.train.loss)],
+    ['Val loss', fmt(latest.val.loss)],
+    ['Val Dice', fmt(latest.val.dice)],
+    ['Val IoU', fmt(latest.val.iou)],
+    ['Best Dice', fmt(bestDice)],
+    ['No improve', `${data.epochs_without_improve ?? data.latest?.stale ?? 0} / ${data.patience || '?'}`],
     ['GPU', data.device || '—'],
   ];
   document.getElementById('cards').innerHTML = cards.map(([label, value]) =>
@@ -179,7 +199,9 @@ function render(data) {
   const history = data.history || [];
   drawChart(history);
   const bestEpoch = data.best_epoch;
-  document.getElementById('rows').innerHTML = [...history].reverse().map(r => `
+  document.getElementById('rows').innerHTML = [...history].reverse().map(raw => {
+    const r = normRow(raw);
+    return `
     <tr>
       <td>${r.epoch}</td>
       <td>${fmt(r.train.loss)}</td>
@@ -187,7 +209,8 @@ function render(data) {
       <td>${fmt(r.val.dice)}</td>
       <td>${fmt(r.val.iou)}</td>
       <td>${r.epoch === bestEpoch ? '★' : ''}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 async function tick() {
