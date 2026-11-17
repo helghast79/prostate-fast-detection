@@ -101,7 +101,33 @@ def main() -> int:
             dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
             opset_version=args.opset,
         )
-        meta = {"stage": "segmenter", "arch": arch, "crop_size": size, "onnx": str(out)}
+        meta = {
+            "stage": "segmenter",
+            "arch": arch,
+            "checkpoint": str(args.checkpoint),
+            "float_onnx": str(out),
+            "input_name": "input",
+            "output_name": "logits",
+            "input_layout": "NCHW",
+            "in_channels": in_ch,
+            "out_channels": 1,
+            "crop_size": size,
+            "preprocess": (
+                "ROI crop (square) around localizer centre on full T2 slice; "
+                "same percentile 1-99 [0,1] intensities as volume; "
+                f"native-resolution {size}x{size} crop (pad with 0 at borders); "
+                "no extra resize if crop_size matches model input"
+            ),
+            "postprocess": (
+                "mask = sigmoid(logits) > 0.5; "
+                "paste ROI mask back into full-slice coordinates using crop offsets/padding"
+            ),
+            "roi": {
+                "size": size,
+                "center_from": "localizer center_yx denormalized to native pixels",
+                "pad_value": 0.0,
+            },
+        }
 
     print(f"Exported {out} ({out.stat().st_size} bytes)")
     if args.quantize:
