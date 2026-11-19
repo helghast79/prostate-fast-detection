@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Case slices</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="case-page">
+  <header>
+    <div class="case-head">
+      <a class="back" href="/">← catalog</a>
+      <h1 id="title">Case</h1>
+    </div>
+    <p class="sub" id="meta">Loading…</p>
+    <div class="controls">
+      <label><input type="checkbox" id="only-mask" /> only slices with mask</label>
+      <span class="legend"><span class="l">● lesion</span></span>
+      <button id="discard-btn" class="danger">discard</button>
+      <span id="stats"></span>
+    </div>
+  </header>
+  <main id="slices" class="slice-grid"></main>
+  <script src="/static/case.js"></script>
+</body>
+</html>
