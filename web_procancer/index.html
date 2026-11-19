@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ProCAncer lesion catalog</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>ProCAncer lesion catalog</h1>
+    <p class="sub">Symlinks into ProCAncer-I nifti studies — nothing is copied. Discard cases you do not want for training.</p>
+    <div class="controls">
+      <label><input type="checkbox" id="complete-only" checked /> complete only (T2+ADC+DWI+lesion)</label>
+      <label><input type="checkbox" id="hide-discarded" /> hide discarded</label>
+      <input id="search" type="search" placeholder="filter patient / study…" />
+      <span id="stats"></span>
+    </div>
+  </header>
+  <main id="grid"></main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

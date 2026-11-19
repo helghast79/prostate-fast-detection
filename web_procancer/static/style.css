@@ -1,0 +1,85 @@
+:root {
+  --bg: #12151a;
+  --card: #1b2129;
+  --text: #e8eef5;
+  --muted: #9aabbc;
+  --ok: #3dba7a;
+  --bad: #d35a5a;
+  --line: #2b3542;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 14px/1.4 "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: radial-gradient(1200px 600px at 10% -10%, #243044, var(--bg));
+  color: var(--text);
+}
+header {
+  padding: 1.25rem 1.5rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: rgba(18, 21, 26, 0.92);
+  backdrop-filter: blur(8px);
+  z-index: 2;
+}
+h1 { margin: 0 0 0.25rem; font-size: 1.4rem; font-weight: 650; }
+.sub { margin: 0 0 0.75rem; color: var(--muted); max-width: 70rem; }
+.controls { display: flex; flex-wrap: wrap; gap: 0.85rem; align-items: center; }
+.controls label { color: var(--muted); }
+#search {
+  background: #0e1217;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  min-width: 16rem;
+}
+#stats { color: var(--muted); margin-left: auto; }
+#grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.9rem;
+  padding: 1rem 1.5rem 2rem;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.card.discarded { opacity: 0.45; }
+.card img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: #0a0d11;
+  display: block;
+}
+.card .body { padding: 0.7rem 0.8rem 0.9rem; display: grid; gap: 0.35rem; }
+.pid { font-family: ui-monospace, monospace; font-size: 0.78rem; word-break: break-all; }
+.meta { color: var(--muted); font-size: 0.85rem; }
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  border: 1px solid var(--line);
+}
+.badge.ok { color: var(--ok); border-color: #2f6b4d; }
+.badge.no { color: var(--bad); border-color: #6b2f2f; }
+.row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+button {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: #10151c;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  cursor: pointer;
+}
+button.danger { border-color: #6b2f2f; color: #f0b0b0; }
+button.keep { border-color: #2f6b4d; color: #b6efcf; }
+.missing { color: #e0b35a; font-size: 0.8rem; }
