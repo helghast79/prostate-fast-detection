@@ -20,13 +20,14 @@ sanitize_sys_path()
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory
 
+from src.cascade.orthanc_volumes import segmentation_type
 from src.orthanc_client import OrthancClient
 from src.seg_preview import resolve_seg_thumbnail_target
 from src.series_manifest import (
+    LESION_SEG_CHOICES,
     MR_TAGS,
+    enrich_patients,
     read_json_manifest,
-    suggest_mr_tag,
-    suggest_prostate_regions,
 )
 
 
@@ -67,49 +68,6 @@ def save_annotations(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def enrich_patients(patients_raw: list[dict[str, Any]], annotations: dict[str, Any]) -> list[dict]:
-    ann_series = annotations.get("series") or {}
-    out: list[dict] = []
-    for patient in patients_raw:
-        series_out = []
-        for series in patient.get("series") or []:
-            uid = series.get("series_instance_uid", "")
-            ann = ann_series.get(uid) or {}
-            modality = str(series.get("modality", "")).upper()
-            item = dict(series)
-            discarded = bool(ann.get("discarded"))
-            item["discarded"] = discarded
-            if modality == "MR":
-                tag = ann.get("mr_tag")
-                if tag not in MR_TAGS:
-                    tag = (
-                        None
-                        if discarded
-                        else suggest_mr_tag(str(series.get("series_description", "")))
-                    )
-                item["mr_tag"] = tag if tag in MR_TAGS else None
-                item["is_prostate_regions"] = None
-            else:
-                flag = ann.get("is_prostate_regions")
-                if flag is None and not discarded:
-                    flag = suggest_prostate_regions(
-                        str(series.get("series_description", "")),
-                        list(series.get("segment_labels") or []),
-                    )
-                item["mr_tag"] = None
-                item["is_prostate_regions"] = flag
-            item["annotation_saved"] = uid in ann_series
-            series_out.append(item)
-        out.append(
-            {
-                "patient_id": patient.get("patient_id"),
-                "orthanc_patient_ids": patient.get("orthanc_patient_ids") or [],
-                "series": series_out,
-            }
-        )
-    return out
-
-
 def create_app(manifest_path: Path, annotations_path: Path) -> Flask:
     app = Flask(
         __name__,
@@ -117,6 +75,14 @@ def create_app(manifest_path: Path, annotations_path: Path) -> Flask:
         static_url_path="/static",
     )
     client = OrthancClient()
+    seg_types: dict[str, str | None] = {}
+
+    def seg_type(series: dict[str, Any]) -> str | None:
+        """SegmentationType (BINARY / FRACTIONAL) of a SEG series, cached."""
+        uid = str(series.get("series_instance_uid", ""))
+        if uid not in seg_types:
+            seg_types[uid] = segmentation_type(client, series)
+        return seg_types[uid]
 
     @app.get("/")
     def index() -> Any:
@@ -140,7 +106,7 @@ def create_app(manifest_path: Path, annotations_path: Path) -> Flask:
         patients = read_json_manifest(manifest_path)
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         annotations = load_annotations(annotations_path)
-        enriched = enrich_patients(payload.get("patients") or [], annotations)
+        enriched = enrich_patients(payload.get("patients") or [], annotations, seg_type)
         return jsonify(
             {
                 "generated_at": payload.get("generated_at"),
@@ -182,6 +148,8 @@ def create_app(manifest_path: Path, annotations_path: Path) -> Flask:
                     item["is_prostate_regions"] = False
                 else:
                     item["is_prostate_regions"] = None
+            if value.get("lesion_seg") in LESION_SEG_CHOICES:
+                item["lesion_seg"] = value["lesion_seg"]
             # Keep entries that are discarded and/or tagged.
             if item:
                 cleaned["series"][str(uid)] = item

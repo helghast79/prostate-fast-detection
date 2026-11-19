@@ -13,6 +13,7 @@
     withSegOnly: document.getElementById("with-seg-only"),
     untaggedOnly: document.getElementById("untagged-only"),
     showDiscarded: document.getElementById("show-discarded"),
+    lesionOnly: document.getElementById("lesion-only"),
     pageSize: document.getElementById("page-size"),
     pageLabel: document.getElementById("page-label"),
     prev: document.getElementById("prev"),
@@ -38,7 +39,32 @@
   function isTagged(series) {
     if (series.discarded) return true;
     if (series.modality === "MR") return Boolean(series.mr_tag);
-    return series.is_prostate_regions === true || series.is_prostate_regions === false;
+    return (
+      series.is_prostate_regions === true ||
+      series.is_prostate_regions === false ||
+      Boolean(series.lesion_seg)
+    );
+  }
+
+  const LESION_TOKENS = ["lesion", "neoplasm", "heatmap", "cspca", "cancer", "tumor", "tumour"];
+
+  function isLesionCandidate(series) {
+    if (series.modality !== "SEG") return false;
+    if (series.lesion_seg) return true;
+    const blob = [series.series_description || "", ...(series.segment_labels || [])]
+      .join(" ")
+      .toLowerCase();
+    return LESION_TOKENS.some((t) => blob.includes(t));
+  }
+
+  // T2 + ADC + DWI tagged and at least one SEG used as lesion label.
+  function lesionReadiness(patient) {
+    const live = (patient.series || []).filter((s) => !s.discarded);
+    const has = (tag) => live.some((s) => s.modality === "MR" && s.mr_tag === tag);
+    const lesion = live.filter((s) => s.lesion_seg === "binary" || s.lesion_seg === "prob60");
+    const missing = ["t2", "adc", "dwi"].filter((t) => !has(t));
+    if (!lesion.length) missing.push("lesion SEG");
+    return { ready: missing.length === 0, missing, nLesion: lesion.length };
   }
 
   function visibleSeries(patient) {
@@ -51,6 +77,7 @@
     const series = visibleSeries(patient);
     if (!series.length) return false;
     if (withSegOnly && !series.some((s) => s.modality === "SEG")) return false;
+    if (el.lesionOnly.checked && !(patient.series || []).some(isLesionCandidate)) return false;
     if (untaggedOnly && series.every(isTagged)) return false;
     if (!query) return true;
     const blob = [
@@ -213,6 +240,28 @@
         render();
       });
       actions.appendChild(select);
+
+      if (isLesionCandidate(series)) {
+        const lesion = document.createElement("select");
+        lesion.disabled = Boolean(series.discarded);
+        lesion.className = "lesion-select";
+        lesion.title = "Use as lesion ground truth?";
+        lesion.innerHTML = `
+          <option value="">lesion label…</option>
+          <option value="binary">lesion: binary mask</option>
+          <option value="prob60">lesion: probability ≥ 60%</option>
+          <option value="no">not a lesion label</option>
+        `;
+        lesion.value = series.lesion_seg || "";
+        lesion.addEventListener("change", () => {
+          series.lesion_seg = lesion.value || null;
+          const ann = ensureAnnotation(series.series_instance_uid);
+          ann.lesion_seg = series.lesion_seg;
+          markDirty();
+          render();
+        });
+        actions.appendChild(lesion);
+      }
     }
 
     const discardBtn = document.createElement("button");
@@ -233,8 +282,16 @@
     if (series.modality === "SEG" && series.segment_labels && series.segment_labels.length) {
       const labs = document.createElement("div");
       labs.className = "uid";
-      labs.textContent = series.segment_labels.slice(0, 4).join(" · ");
+      const extra = series.segment_labels.length > 4 ? ` · +${series.segment_labels.length - 4}` : "";
+      labs.textContent = series.segment_labels.slice(0, 4).join(" · ") + extra;
+      labs.title = series.segment_labels.join("\n");
       body.appendChild(labs);
+    }
+    if (series.modality === "SEG" && series.segmentation_type) {
+      const t = document.createElement("div");
+      t.className = `uid segtype ${series.segmentation_type.toLowerCase()}`;
+      t.textContent = series.segmentation_type;
+      body.appendChild(t);
     }
 
     card.appendChild(thumb);
@@ -281,12 +338,19 @@
       const nMr = shown.filter((s) => s.modality === "MR").length;
       const nSeg = shown.filter((s) => s.modality === "SEG").length;
       const nDiscarded = (patient.series || []).filter((s) => s.discarded).length;
+      let lesionBadge = "";
+      if ((patient.series || []).some(isLesionCandidate)) {
+        const r = lesionReadiness(patient);
+        lesionBadge = r.ready
+          ? `<span class="ready yes">lesion dataset ✓ (${r.nLesion} lesion SEG)</span>`
+          : `<span class="ready no">lesion dataset: missing ${escapeHtml(r.missing.join(", "))}</span>`;
+      }
       section.innerHTML = `
         <div class="patient-head">
           <div class="patient-id">${escapeHtml(patient.patient_id)}</div>
           <div class="patient-meta">${nMr} MR · ${nSeg} SEG${
             nDiscarded ? ` · ${nDiscarded} discarded` : ""
-          }</div>
+          } ${lesionBadge}</div>
         </div>
       `;
 
@@ -333,7 +397,16 @@
               ? s.is_prostate_regions
               : fromState.is_prostate_regions;
         }
-        if (item.discarded || item.mr_tag || item.is_prostate_regions === true || item.is_prostate_regions === false) {
+        if (s.modality === "SEG" && (s.lesion_seg || fromState.lesion_seg)) {
+          item.lesion_seg = s.lesion_seg || fromState.lesion_seg;
+        }
+        if (
+          item.discarded ||
+          item.mr_tag ||
+          item.lesion_seg ||
+          item.is_prostate_regions === true ||
+          item.is_prostate_regions === false
+        ) {
           series[uid] = item;
         }
       }
@@ -389,6 +462,7 @@
     el.withSegOnly.addEventListener("change", resetPageAndRender);
     el.untaggedOnly.addEventListener("change", resetPageAndRender);
     el.showDiscarded.addEventListener("change", resetPageAndRender);
+    el.lesionOnly.addEventListener("change", resetPageAndRender);
     el.pageSize.addEventListener("change", resetPageAndRender);
     el.prev.addEventListener("click", () => {
       state.page -= 1;
