@@ -147,6 +147,41 @@ def resample_mask_to_geometry(
     return (warped > 0.5).astype(np.uint8)
 
 
+def resample_label_mask_to_geometry(
+    mask: np.ndarray,
+    src: SliceGeometry,
+    dst: SliceGeometry,
+) -> np.ndarray:
+    """Nearest-neighbor resample that preserves integer class labels (0/1/2…)."""
+    mask = np.asarray(mask)
+    d0 = dst.ipp - src.ipp
+    a00 = float((dst.spacing[0] * dst.col_dir) @ src.col_dir / src.spacing[0])
+    a01 = float((dst.spacing[1] * dst.row_dir) @ src.col_dir / src.spacing[0])
+    t0 = float(d0 @ src.col_dir / src.spacing[0])
+    a10 = float((dst.spacing[0] * dst.col_dir) @ src.row_dir / src.spacing[1])
+    a11 = float((dst.spacing[1] * dst.row_dir) @ src.row_dir / src.spacing[1])
+    t1 = float(d0 @ src.row_dir / src.spacing[1])
+    matrix = np.array([[a00, a01], [a10, a11]], dtype=np.float64)
+    offset = np.array([t0, t1], dtype=np.float64)
+    if (
+        np.allclose(matrix, np.eye(2), atol=1e-6)
+        and np.allclose(offset, 0, atol=1e-3)
+        and mask.shape == (dst.rows, dst.cols)
+    ):
+        return mask.astype(np.uint8, copy=True)
+    warped = ndimage.affine_transform(
+        mask.astype(np.float32),
+        matrix=matrix,
+        offset=offset,
+        output_shape=(dst.rows, dst.cols),
+        order=0,
+        mode="constant",
+        cval=0.0,
+        prefilter=False,
+    )
+    return np.rint(warped).astype(np.uint8)
+
+
 def ipp_key(ipp: np.ndarray, decimals: int = 3) -> tuple[float, float, float]:
     """Quantized IPP key for dual-acquisition grouping."""
     rounded = np.round(np.asarray(ipp, dtype=np.float64), decimals=decimals)

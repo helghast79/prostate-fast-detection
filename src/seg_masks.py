@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 import pydicom
@@ -102,18 +104,48 @@ def _is_seminal_vesicle(label: str) -> bool:
     return "seminal" in text or text in {"sv", "s.v.", "s.v"}
 
 
+def is_lesion_label(label: str) -> bool:
+    return "lesion" in str(label or "").lower()
+
+
+_PROB_BIN = re.compile(r"\((\d+(?:\.\d+)?)\s*-\s*\d+(?:\.\d+)?\s*%\)")
+
+
+def probability_bin_at_least(label: str, min_percent: float) -> bool:
+    """True for binned probability labels like 'Neoplasm (60-70%)' with lower bound ≥ min."""
+    m = _PROB_BIN.search(str(label or ""))
+    return bool(m) and float(m.group(1)) >= min_percent
+
+
 def extract_prostate_frames(
-    seg_bytes: bytes, *, exclude_seminal_vesicles: bool = False
+    seg_bytes: bytes,
+    *,
+    exclude_seminal_vesicles: bool = False,
+    label_filter: Callable[[str], bool] | None = None,
+    fractional_threshold: float | None = None,
 ) -> tuple[list[FrameMask], Dataset]:
     """
     Extract per-plane prostate masks, OR-merging **all** segments.
 
     Two-segment zone labels (e.g. TZ+CZ / PZ) are joined into one whole-gland mask.
     Seminal-vesicle segments are not prostate; drop them with
-    ``exclude_seminal_vesicles=True``.
+    ``exclude_seminal_vesicles=True``. ``label_filter`` keeps only segments whose
+    SegmentLabel passes (all segments if the SEG has no labels). For FRACTIONAL SEGs,
+    ``fractional_threshold`` (0–1) keeps pixels with probability ≥ threshold.
     """
     seg_ds = pydicom.dcmread(io.BytesIO(seg_bytes))
     segment_numbers = all_segment_numbers(seg_ds)
+    if label_filter is not None:
+        seq = list(getattr(seg_ds, "SegmentSequence", []) or [])
+        keep = {
+            int(getattr(s, "SegmentNumber", 0))
+            for s in seq
+            if label_filter(str(getattr(s, "SegmentLabel", "")))
+        }
+        unlabeled = not any(str(getattr(s, "SegmentLabel", "")).strip() for s in seq)
+        segment_numbers = (
+            segment_numbers if unlabeled else [n for n in segment_numbers if n in keep]
+        )
     if exclude_seminal_vesicles:
         sv_numbers = {
             int(getattr(s, "SegmentNumber", 0))
@@ -132,12 +164,24 @@ def extract_prostate_frames(
     wanted = set(segment_numbers)
     merged: dict[str, np.ndarray] = {}
     meta: dict[str, dict] = {}
+    min_value: float = 1
+    if fractional_threshold is not None and str(getattr(seg_ds, "SegmentationType", "")).upper() == "FRACTIONAL":
+        max_value = float(getattr(seg_ds, "MaximumFractionalValue", 255) or 255)
+        min_value = max(fractional_threshold * max_value, 1)
+
+    def _frame_ref(frame_fg: Dataset) -> int | None:
+        seg_id = getattr(frame_fg, "SegmentIdentificationSequence", None)
+        return int(getattr(seg_id[0], "ReferencedSegmentNumber", -1)) if seg_id else None
+
+    # Some exporters reference segments by 1-based position instead of SegmentNumber.
+    declared = [int(getattr(s, "SegmentNumber", 0)) for s in getattr(seg_ds, "SegmentSequence", []) or []]
+    refs = {r for r in map(_frame_ref, per_frame) if r is not None}
+    by_position = bool(refs) and not (refs & set(declared)) and refs <= set(range(1, len(declared) + 1))
 
     for idx, frame_fg in enumerate(per_frame):
-        seg_id = getattr(frame_fg, "SegmentIdentificationSequence", None)
-        frame_seg_num = None
-        if seg_id:
-            frame_seg_num = int(getattr(seg_id[0], "ReferencedSegmentNumber", -1))
+        frame_seg_num = _frame_ref(frame_fg)
+        if by_position and frame_seg_num is not None:
+            frame_seg_num = declared[frame_seg_num - 1]
         if frame_seg_num is not None and frame_seg_num not in wanted:
             continue
 
@@ -152,7 +196,7 @@ def extract_prostate_frames(
         else:
             key = "ipp:" + ",".join(str(x) for x in ipp_key(geometry.ipp, decimals=3))
 
-        mask = (pixels[idx] > 0).astype(np.uint8)
+        mask = (pixels[idx] >= min_value).astype(np.uint8)
         prev = merged.get(key)
         if prev is None:
             merged[key] = mask

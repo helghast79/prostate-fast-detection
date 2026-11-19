@@ -7,7 +7,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 
 MR_TAGS = ("t2", "adc", "dwi")
@@ -149,11 +149,45 @@ def read_json_manifest(path: Path) -> list[PatientEntry]:
     return patients
 
 
+LESION_SEG_CHOICES = ("binary", "prob60", "no")
+LESION_TOKENS = ("lesion", "neoplasm", "heatmap", "cspca", "cancer", "tumor", "tumour")
+
+
+def is_lesion_candidate(description: str, segment_labels: list[str] | None = None) -> bool:
+    blob = " ".join([description or ""] + list(segment_labels or [])).lower()
+    return any(tok in blob for tok in LESION_TOKENS)
+
+
+def suggest_lesion_seg(
+    description: str,
+    segment_labels: list[str] | None,
+    segmentation_type: str | None,
+    patient_has_plain_binary: bool,
+) -> str | None:
+    """binary = any marked pixel; prob60 = probability ≥ 0.6; no = not a lesion label."""
+    labels = list(segment_labels or [])
+    if not is_lesion_candidate(description, labels):
+        return None
+    blob = " ".join([description or ""] + labels).lower()
+    if "broad" in blob or "core roi" in blob:
+        return "no"
+    probabilistic = (segmentation_type or "").upper() == "FRACTIONAL" or "%" in blob
+    if probabilistic:
+        return "no" if patient_has_plain_binary else "prob60"
+    return "binary"
+
+
 def suggest_mr_tag(description: str) -> str | None:
     text = description.lower()
     if "adc" in text:
         return "adc"
-    if "dwi" in text or "diff" in text or "bval" in text or "b-value" in text:
+    if (
+        "dwi" in text
+        or "diff" in text
+        or "bval" in text
+        or "b-value" in text
+        or re.search(r"\bs?b\d{3,4}\b", text)
+    ):
         return "dwi"
     if re.search(r"\bt2\b", text) or "t2_" in text or "t2w" in text:
         return "t2"
@@ -190,3 +224,73 @@ def suggest_prostate_regions(description: str, segment_labels: list[str] | None 
     if any(tok in blob for tok in positive):
         return True
     return None
+
+
+def enrich_patients(
+    patients_raw: list[dict[str, Any]],
+    annotations: dict[str, Any],
+    seg_type: Callable[[dict[str, Any]], str | None],
+) -> list[dict]:
+    """Saved review tags, falling back to suggestions for untagged series."""
+    ann_series = annotations.get("series") or {}
+    out: list[dict] = []
+    for patient in patients_raw:
+        series_out = []
+        lesion_segs = [
+            s for s in patient.get("series") or []
+            if str(s.get("modality", "")).upper() == "SEG"
+            and is_lesion_candidate(str(s.get("series_description", "")), s.get("segment_labels"))
+        ]
+        types = {s.get("series_instance_uid"): seg_type(s) for s in lesion_segs}
+        has_plain_binary = any(
+            suggest_lesion_seg(str(s.get("series_description", "")), s.get("segment_labels"),
+                               types[s.get("series_instance_uid")], False) == "binary"
+            and not (ann_series.get(s.get("series_instance_uid")) or {}).get("discarded")
+            for s in lesion_segs
+        )
+        for series in patient.get("series") or []:
+            uid = series.get("series_instance_uid", "")
+            ann = ann_series.get(uid) or {}
+            modality = str(series.get("modality", "")).upper()
+            item = dict(series)
+            discarded = bool(ann.get("discarded"))
+            item["discarded"] = discarded
+            if modality == "MR":
+                tag = ann.get("mr_tag")
+                if tag not in MR_TAGS:
+                    tag = (
+                        None
+                        if discarded
+                        else suggest_mr_tag(str(series.get("series_description", "")))
+                    )
+                item["mr_tag"] = tag if tag in MR_TAGS else None
+                item["is_prostate_regions"] = None
+            else:
+                flag = ann.get("is_prostate_regions")
+                if flag is None and not discarded:
+                    flag = suggest_prostate_regions(
+                        str(series.get("series_description", "")),
+                        list(series.get("segment_labels") or []),
+                    )
+                item["mr_tag"] = None
+                item["is_prostate_regions"] = flag
+                item["segmentation_type"] = types.get(uid)
+                choice = ann.get("lesion_seg")
+                if choice not in LESION_SEG_CHOICES and not discarded:
+                    choice = suggest_lesion_seg(
+                        str(series.get("series_description", "")),
+                        list(series.get("segment_labels") or []),
+                        types.get(uid),
+                        has_plain_binary,
+                    )
+                item["lesion_seg"] = choice if choice in LESION_SEG_CHOICES else None
+            item["annotation_saved"] = uid in ann_series
+            series_out.append(item)
+        out.append(
+            {
+                "patient_id": patient.get("patient_id"),
+                "orthanc_patient_ids": patient.get("orthanc_patient_ids") or [],
+                "series": series_out,
+            }
+        )
+    return out
